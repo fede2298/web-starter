@@ -1,0 +1,58 @@
+name: CI and Clean
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+      - name: Build
+        run: npm run build
+      - name: Run Lint
+        run: npm run lint || true
+      - name: Upload artifact (build)
+        uses: actions/upload-artifact@v4
+        with:
+          name: build
+          path: .next/
+      - name: Clean runner
+        run: npm run clean
+
+  vercel-cleanup:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Cleanup old Vercel deployments
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+          KEEP: 10
+        run: |
+          echo "Listing deployments..."
+          deployments=$(curl -s -H "Authorization: Bearer $VERCEL_TOKEN" "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID?teamId=$VERCEL_TEAM_ID" | jq -r '.latestDeployments[].id')
+          echo "$deployments"
+          all=$(curl -s -H "Authorization: Bearer $VERCEL_TOKEN" "https://api.vercel.com/v13/deployments?projectId=$VERCEL_PROJECT_ID&teamId=$VERCEL_TEAM_ID" | jq -r '.[].uid')
+          # fallback: list via v9
+          all=$(curl -s -H "Authorization: Bearer $VERCEL_TOKEN" "https://api.vercel.com/v13/deployments?projectId=$VERCEL_PROJECT_ID&teamId=$VERCEL_TEAM_ID" | jq -r '.[].id')
+          i=0
+          for id in $all; do
+            i=$((i+1))
+            if [ $i -gt $KEEP ]; then
+              echo "Deleting $id"
+              curl -s -X DELETE -H "Authorization: Bearer $VERCEL_TOKEN" "https://api.vercel.com/v13/deployments/$id?teamId=$VERCEL_TEAM_ID"
+            fi
+          done
